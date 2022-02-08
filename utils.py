@@ -2,8 +2,10 @@ import matplotlib.pyplot as plt
 import torch
 import math
 
-def display_array(arr, num_rows=-1, num_cols=-1, titles=None, do_colorbars=False):
+def display_array(arr, num_rows=-1, num_cols=-1, titles=None, do_colorbars=False, cmap=None):
     arr = arr.squeeze()
+    if len(arr.shape) == 4:
+        arr = arr[0,...] #Account for batchsize possibility
     assert len(arr.shape) == 3, "Proper shape for display must be [B, H, W]"
     
     if torch.is_tensor(arr): 
@@ -24,7 +26,10 @@ def display_array(arr, num_rows=-1, num_cols=-1, titles=None, do_colorbars=False
 
     for idx, item in enumerate(arr):
         if num_rows > 1 and num_cols > 1:
-            im = axarr[int(idx/num_cols), idx%num_cols].imshow(item, cmap="gray")
+            if cmap:
+                im = axarr[int(idx/num_cols), idx%num_cols].imshow(item, cmap=cmap)
+            else:
+                im = axarr[int(idx/num_cols), idx%num_cols].imshow(item)
             axarr[int(idx/num_cols), idx%num_cols].set_xticks([])
             axarr[int(idx/num_cols), idx%num_cols].set_yticks([])
             if do_colorbars:
@@ -32,7 +37,10 @@ def display_array(arr, num_rows=-1, num_cols=-1, titles=None, do_colorbars=False
             if titles:
                 axarr[int(idx/num_cols), idx%num_cols].set_title(titles[idx])
         elif num_cols > 1:
-            im = axarr[idx%num_cols].imshow(item, cmap="gray")
+            if cmap:
+                im = axarr[idx%num_cols].imshow(item, cmap=cmap)
+            else:
+                im = axarr[idx%num_cols].imshow(item)
             axarr[idx%num_cols].set_xticks([])
             axarr[idx%num_cols].set_yticks([])
             if do_colorbars:
@@ -40,7 +48,10 @@ def display_array(arr, num_rows=-1, num_cols=-1, titles=None, do_colorbars=False
             if titles:
                 axarr[idx%num_cols].set_title(titles[idx])
         elif num_rows > 1:
-            im = axarr[int(idx/num_cols)].imshow(item, cmap="gray")
+            if cmap:
+                im = axarr[int(idx/num_cols)].imshow(item, cmap=cmap)
+            else:
+                im = axarr[int(idx/num_cols)].imshow(item)
             axarr[int(idx/num_cols)].set_xticks([])
             axarr[int(idx/num_cols)].set_yticks([])
             if do_colorbars:
@@ -48,7 +59,10 @@ def display_array(arr, num_rows=-1, num_cols=-1, titles=None, do_colorbars=False
             if titles:
                 axarr[int(idx/num_cols)].set_title(titles[idx])
         else:
-            im = axarr.imshow(item, cmap="gray")
+            if cmap:
+                im = axarr.imshow(item, cmap=cmap)
+            else:
+                im = axarr.imshow(item)
             axarr.set_xticks([])
             axarr.set_yticks([])
             if do_colorbars:
