@@ -65,7 +65,7 @@ def gen_example(net, dset, device):
 
     pred = net(support_images, support_masks, query_image)
     pred = (torch.sigmoid(pred)>0.5) + 0
-    dice = clm.losses.soft_dice(pred, query_mask, logits=False)
+    dice = clm.losses.soft_dice(pred, query_mask, logits=False, binary=False)
 
     clm.utils.training.display_forward_pass(dice.item(), query_image, pred, query_mask, torch.cat([support_images, support_masks]), threshold=False)
 
