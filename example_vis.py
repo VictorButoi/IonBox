@@ -64,9 +64,10 @@ def gen_example(net, dset, device):
     query_mask = query_set['labels'].to(device=device, dtype=torch.float32)[np.newaxis,...]
 
     pred = net(support_images, support_masks, query_image)
-    dice = clm.losses.soft_dice(pred, query_mask)
+    pred = (torch.sigmoid(pred)>0.5) + 0
+    dice = clm.losses.soft_dice(pred, query_mask, logits=False)
 
-    clm.utils.training.display_forward_pass(dice.item(), query_image, torch.sigmoid(pred), query_mask, torch.cat([support_images, support_masks]), threshold=True)
+    clm.utils.training.display_forward_pass(dice.item(), query_image, pred, query_mask, torch.cat([support_images, support_masks]), threshold=False)
 
 def get_val_perf(args, net, dset, device, num_samples=100):
     dset.num_iterations = num_samples
