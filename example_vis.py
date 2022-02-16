@@ -25,7 +25,7 @@ def get_models(date, root="/home/vib9/src/CLAIMS/results/models"):
 def get_model_info(date, model, root="/home/vib9/src/CLAIMS/results/models"):
     print(list(map(lambda epoch: epoch.replace("epoch:",""), os.listdir(os.path.join(root, date, model)))))
 
-def get_model_dset(date, model, datasets=None, root="/home/vib9/src/CLAIMS/results/models"):
+def get_model_dset(split, date, model, datasets=None, root="/home/vib9/src/CLAIMS/results/models"):
     config = load_obj(os.path.join(root, date, model, "config"))
     
     try:
@@ -36,7 +36,11 @@ def get_model_dset(date, model, datasets=None, root="/home/vib9/src/CLAIMS/resul
     if datasets:
         config.train_dsets = datasets
         config.train_dsets_exclude = None
-    dset, _ = clm.datasets.generate_datasets(config)
+    if split == "train":
+        dset, _ = clm.datasets.generate_datasets(config)
+    else:
+        _, dset = clm.datasets.generate_datasets(config)
+        
     return dset
 
 def get_saved_model(date, model, epoch, root="/home/vib9/src/CLAIMS/results/models"):
