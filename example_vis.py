@@ -3,6 +3,7 @@ import claims as clm
 import pickle
 import torch
 import numpy as np
+from tqdm import tqdm
 
 
 def load_obj(name):
@@ -37,7 +38,7 @@ def get_model_dset(split, date, model, datasets=None, root="/home/vib9/src/CLAIM
         config.train_dsets = datasets
         config.train_dsets_exclude = None
         config.val_dsets = datasets
-        
+
     if split == "train":
         dset, _ = clm.datasets.generate_datasets(config)
     else:
@@ -88,8 +89,35 @@ def gen_example(args, net, dset, device):
 
 def get_val_perf(args, net, dset, device, num_samples=100):
     dset.num_iterations = num_samples
-    loader  = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
-    _, val_dice_loss = clm.training_funcs.eval_loop(net, args.model_type, loader, clm.losses.soft_dice, num_samples, 0, 1, device, show_output=True)
+    loader = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
+
+    net.eval()
+    epoch_val_dices = []
+
+    iteration = 0
+    with tqdm(total=num_samples, desc=f'Validation Loop', unit='batch') as pbar:
+        with torch.no_grad():
+            for (support_set, query_set) in loader:
+                support_images = support_set['images'].to(device=device, dtype=torch.float32)
+                support_masks = support_set['labels'].to(device=device, dtype=torch.float32)
+                query_image = query_set['images'].to(device=device, dtype=torch.float32)
+                query_mask = query_set['labels'].to(device=device, dtype=torch.float32)
+
+                if args.model_type == "UNet":
+                    pred = net(query_image.squeeze(1))
+                else:
+                    pred = net(support_images, support_masks, query_image)
+
+                dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), binary=True)
+                epoch_val_dices.append(dice)
+
+                pbar.set_postfix(**{'hard dice (batch)': dice})
+                pbar.update(support_images.shape[0])
+                iteration += 1
+            epoch_val_dices = torch.tensor(epoch_val_dices)
+            pbar.set_postfix(**{'avg val dice': torch.mean(epoch_val_dices)})
+    pbar.close()
+    val_dice_loss = torch.mean(epoch_val_dices).numpy().item()
     print(f"Avg Val Hard Dice for {num_samples} iterations:", np.round(val_dice_loss,3))
 
 
