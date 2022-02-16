@@ -66,7 +66,7 @@ def gen_example(net, dset, device):
     pred = net(support_images, support_masks, query_image)
     dice = clm.losses.soft_dice(pred, query_mask)
 
-    clm.utils.training.display_forward_pass(dice.item(), query_image, torch.sigmoid(pred), query_mask, torch.cat([support_images, support_masks]))
+    clm.utils.training.display_forward_pass(dice.item(), query_image, torch.sigmoid(pred), query_mask, torch.cat([support_images, support_masks]), threshold=True)
 
 def get_val_perf(args, net, dset, device, num_samples=100):
     dset.num_iterations = num_samples
