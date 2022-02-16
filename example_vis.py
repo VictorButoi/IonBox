@@ -36,6 +36,8 @@ def get_model_dset(split, date, model, datasets=None, root="/home/vib9/src/CLAIM
     if datasets:
         config.train_dsets = datasets
         config.train_dsets_exclude = None
+        config.val_dsets = datasets
+        
     if split == "train":
         dset, _ = clm.datasets.generate_datasets(config)
     else:
@@ -53,6 +55,11 @@ def get_saved_model(date, model, epoch, root="/home/vib9/src/CLAIMS/results/mode
         config.no_supportsupport_crossconv = True
         config.use_attention = False
 
+    try:
+        _ = config.pad_slices
+    except:
+        config.pad_slices = 0 
+
     net = clm.config.get_net(config)
     net.load_state_dict(torch.load(model_weights))
     device = torch.device(f"cuda:{get_freer_gpu()}" if torch.cuda.is_available() else 'cpu')
@@ -60,23 +67,29 @@ def get_saved_model(date, model, epoch, root="/home/vib9/src/CLAIMS/results/mode
     net.eval()
     return net, device, config
 
-def gen_example(net, dset, device):
+def gen_example(args, net, dset, device):
     support_set, query_set = dset.__getitem__(0)
     support_images = support_set['images'].to(device=device, dtype=torch.float32)[np.newaxis,...]
     support_masks = support_set['labels'].to(device=device, dtype=torch.float32)[np.newaxis,...]
     query_image = query_set['images'].to(device=device, dtype=torch.float32)[np.newaxis,...]
-    query_mask = query_set['labels'].to(device=device, dtype=torch.float32)[np.newaxis,...]
+    query_mask = query_set['labels'].to(device=device, dtype=torch.float32)
 
     pred = net(support_images, support_masks, query_image)
-    pred = (torch.sigmoid(pred)>0.5) + 0
-    dice = clm.losses.soft_dice(pred, query_mask, logits=False, binary=False)
+    dice = clm.losses.soft_dice(pred, query_mask, logits=True, binary=True)
 
-    clm.utils.training.display_forward_pass(dice.item(), query_image, pred, query_mask, torch.cat([support_images, support_masks]), threshold=False)
+    middle_query_image = query_image[:,:,args.pad_slices,...]
+    if args.model_type == "UNet":
+        support_set = None
+    else:
+        cat_support_set = torch.cat([support_images, support_masks])
+        middle_support_set = cat_support_set[:,:,args.pad_slices,...]
+
+    clm.utils.training.display_forward_pass(dice.item(), middle_query_image, pred, query_mask, middle_support_set)
 
 def get_val_perf(args, net, dset, device, num_samples=100):
     dset.num_iterations = num_samples
     loader  = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
     _, val_dice_loss = clm.training_funcs.eval_loop(net, args.model_type, loader, clm.losses.soft_dice, num_samples, 0, 1, device, show_output=True)
-    print(f"Avg Val Dice for {num_samples} iterations:", np.round(val_dice_loss,3))
+    print(f"Avg Val Hard Dice for {num_samples} iterations:", np.round(val_dice_loss,3))
 
 
