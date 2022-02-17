@@ -87,6 +87,7 @@ def gen_example(args, net, dset, device):
 
     clm.utils.training.display_forward_pass(dice.item(), middle_query_image, pred, query_mask, middle_support_set)
 
+
 def get_val_perf(args, net, dset, device, num_samples=100):
     dset.num_iterations = num_samples
     loader = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
@@ -118,6 +119,8 @@ def get_val_perf(args, net, dset, device, num_samples=100):
             pbar.set_postfix(**{'avg val dice': torch.mean(epoch_val_dices)})
     pbar.close()
     val_dice_loss = torch.mean(epoch_val_dices).numpy().item()
+    val_dice_std = torch.std(epoch_val_dices).numpy().item()
     print(f"Avg Val Hard Dice for {num_samples} iterations:", np.round(val_dice_loss,3))
+    print(f"Stdv of Hard Dice for {num_samples} iterations:", np.round(val_dice_std,3))
 
 
