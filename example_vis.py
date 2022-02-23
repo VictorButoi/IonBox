@@ -26,27 +26,59 @@ def get_models(date, root="/home/vib9/src/CLAIMS/results/models"):
 def get_model_info(date, model, root="/home/vib9/src/CLAIMS/results/models"):
     print(list(map(lambda epoch: epoch.replace("epoch:",""), os.listdir(os.path.join(root, date, model)))))
 
-def get_model_dset(split, date, model, datasets=None, root="/home/vib9/src/CLAIMS/results/models"):
+def get_model_dset(split, date, model, iterations=100, datasets=None, root="/home/vib9/src/CLAIMS/results/models", get_3D_vols=False):
     config = load_obj(os.path.join(root, date, model, "config"))
     
     try:
         _ = config.pad_slices
     except:
-        config.pad_slices = 0    
+        config.pad_slices = 0
+
+    try:
+        _ = config.train_labels
+    except:
+        config.train_labels = None  
+
+    try:
+        _ = config.val_labels
+    except:
+        config.val_labels = None      
 
     if datasets:
         config.train_dsets = datasets
         config.train_dsets_exclude = None
         config.val_dsets = datasets
 
-    if split == "train":
-        dset, _ = clm.datasets.generate_datasets(config)
+    if get_3D_vols:
+        if split == "train":
+            dset = clm.datasets.MegaMedical3DVol(split=split,
+                                                datasets=datasets,
+                                                num_iterations=iterations,
+                                                use_halfsize=config.use_halfsize,
+                                                preload=False,
+                                                load_on_demand=True,
+                                                transforms=None,
+                                                labels=config.train_labels,
+                                                show_output=config.show_output)
+        else:
+            dset = clm.datasets.MegaMedical3DVol(split=split,
+                                                datasets=datasets,
+                                                num_iterations=iterations,
+                                                use_halfsize=config.use_halfsize,
+                                                preload=False,
+                                                load_on_demand=True,
+                                                transforms=None,
+                                                labels=config.val_labels,
+                                                show_output=config.show_output)
     else:
-        _, dset = clm.datasets.generate_datasets(config)
+        if split == "train":
+            dset, _ = clm.datasets.generate_datasets(config)
+        else:
+            _, dset = clm.datasets.generate_datasets(config)
         
     return dset
 
-def get_saved_model(date, model, epoch, root="/home/vib9/src/CLAIMS/results/models"):
+def get_saved_model(date, model, epoch, root="/home/vib9/src/CLAIMS/results/models", to_device=True):
     model_weights = os.path.join(root, date, model, f"epoch:{epoch}")
     config = load_obj(os.path.join(root, date, model, "config"))
     try:
@@ -64,7 +96,8 @@ def get_saved_model(date, model, epoch, root="/home/vib9/src/CLAIMS/results/mode
     net = clm.config.get_net(config)
     net.load_state_dict(torch.load(model_weights))
     device = torch.device(f"cuda:{get_freer_gpu()}" if torch.cuda.is_available() else 'cpu')
-    net.to(device)
+    if to_device:
+        net.to(device)
     net.eval()
     return net, device, config
 
@@ -88,7 +121,18 @@ def gen_example(args, net, dset, device):
     clm.utils.training.display_forward_pass(dice.item(), middle_query_image, pred, query_mask, middle_support_set)
 
 
-def get_val_perf(args, net, dset, device, num_samples=100):
+def predict_3D(net, img):
+    # preallocate our desired memory
+    seg = torch.clone(img)
+    img = img[np.newaxis, ...]
+    for slice_idx in range(img.shape[2]):
+        sliced_img = img[...,slice_idx] 
+        pred = (torch.sigmoid(net(sliced_img).detach())>0.5)+0 #1,1,H,W
+        seg[..., slice_idx] = pred
+    return seg
+
+
+def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, multi_dim_dice=False):
     dset.num_iterations = num_samples
     loader = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
 
@@ -104,12 +148,16 @@ def get_val_perf(args, net, dset, device, num_samples=100):
                 query_image = query_set['images'].to(device=device, dtype=torch.float32)
                 query_mask = query_set['labels'].to(device=device, dtype=torch.float32)
 
-                if args.model_type == "UNet":
+                if args.model_type == "UNet" and not multi_dim_dice:
                     pred = net(query_image.squeeze(1))
+                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), binary=True)
+                elif args.model_type == "UNet" and multi_dim_dice:
+                    pred = predict_3D(net,query_image.squeeze(1))
+                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), logits=False, binary=False, do3D=True)
                 else:
                     pred = net(support_images, support_masks, query_image)
+                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), binary=True)
 
-                dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), binary=True)
                 epoch_val_dices.append(dice)
 
                 pbar.set_postfix(**{'hard dice (batch)': dice})
@@ -120,7 +168,11 @@ def get_val_perf(args, net, dset, device, num_samples=100):
     pbar.close()
     val_dice_loss = torch.mean(epoch_val_dices).numpy().item()
     val_dice_std = torch.std(epoch_val_dices).numpy().item()
-    print(f"Avg Val Hard Dice for {num_samples} iterations:", np.round(val_dice_loss,3))
-    print(f"Stdv of Hard Dice for {num_samples} iterations:", np.round(val_dice_std,3))
+
+    if show_output:
+        print(f"Avg Val Hard Dice for {num_samples} iterations:", np.round(val_dice_loss,3))
+        print(f"Stdv of Hard Dice for {num_samples} iterations:", np.round(val_dice_std,3))
+        
+    return val_dice_loss, val_dice_std
 
 
