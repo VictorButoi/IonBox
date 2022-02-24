@@ -4,6 +4,8 @@ import pickle
 import torch
 import numpy as np
 from tqdm import tqdm
+from .utils import display_array
+import matplotlib.pyplot as plt
 
 
 def load_obj(name):
@@ -26,7 +28,7 @@ def get_models(date, root="/home/vib9/src/CLAIMS/results/models"):
 def get_model_info(date, model, root="/home/vib9/src/CLAIMS/results/models"):
     print(list(map(lambda epoch: epoch.replace("epoch:",""), os.listdir(os.path.join(root, date, model)))))
 
-def get_model_dset(split, date, model, iterations=100, datasets=None, root="/home/vib9/src/CLAIMS/results/models", get_3D_vols=False):
+def get_model_dset(split, date, model, datasets=None, root="/home/vib9/src/CLAIMS/results/models", get_3D_vols=False):
     config = load_obj(os.path.join(root, date, model, "config"))
     
     try:
@@ -48,33 +50,13 @@ def get_model_dset(split, date, model, iterations=100, datasets=None, root="/hom
         config.train_dsets = datasets
         config.train_dsets_exclude = None
         config.val_dsets = datasets
+    
+    config.augmentations = None
 
-    if get_3D_vols:
-        if split == "train":
-            dset = clm.datasets.MegaMedical3DVol(split=split,
-                                                datasets=datasets,
-                                                num_iterations=iterations,
-                                                use_halfsize=config.use_halfsize,
-                                                preload=False,
-                                                load_on_demand=True,
-                                                transforms=None,
-                                                labels=config.train_labels,
-                                                show_output=config.show_output)
-        else:
-            dset = clm.datasets.MegaMedical3DVol(split=split,
-                                                datasets=datasets,
-                                                num_iterations=iterations,
-                                                use_halfsize=config.use_halfsize,
-                                                preload=False,
-                                                load_on_demand=True,
-                                                transforms=None,
-                                                labels=config.val_labels,
-                                                show_output=config.show_output)
+    if split == "train":
+        dset, _ = clm.datasets.generate_datasets(config, get_3D_vols=get_3D_vols)
     else:
-        if split == "train":
-            dset, _ = clm.datasets.generate_datasets(config)
-        else:
-            _, dset = clm.datasets.generate_datasets(config)
+        _, dset = clm.datasets.generate_datasets(config, get_3D_vols=get_3D_vols)
         
     return dset
 
@@ -108,31 +90,39 @@ def gen_example(args, net, dset, device):
     query_image = query_set['images'].to(device=device, dtype=torch.float32)[np.newaxis,...]
     query_mask = query_set['labels'].to(device=device, dtype=torch.float32)
 
-    pred = net(support_images, support_masks, query_image)
+    if args.model_type == "UNet":
+        pred = net(query_image.squeeze(1))
+    else:
+        pred = net(support_images, support_masks, query_image)
     dice = clm.losses.soft_dice(pred, query_mask, logits=True, binary=True)
 
     middle_query_image = query_image[:,:,args.pad_slices,...]
     if args.model_type == "UNet":
-        support_set = None
+        middle_support_set = None
     else:
         cat_support_set = torch.cat([support_images, support_masks])
         middle_support_set = cat_support_set[:,:,args.pad_slices,...]
-
+    #Accepts logits for pred
     clm.utils.training.display_forward_pass(dice.item(), middle_query_image, pred, query_mask, middle_support_set)
 
 
-def predict_3D(net, img):
+def predict_3D(net, img, pred_shape, support_im=None, support_ma=None):
     # preallocate our desired memory
-    seg = torch.clone(img)
-    img = img[np.newaxis, ...]
-    for slice_idx in range(img.shape[2]):
-        sliced_img = img[...,slice_idx] 
-        pred = (torch.sigmoid(net(sliced_img).detach())>0.5)+0 #1,1,H,W
-        seg[..., slice_idx] = pred
-    return seg
+    seg_slices = []
+    for slice_idx in range(pred_shape[-3]):
+        if not (support_im is None):
+            reshaped_img = img.permute(0,1,3,4,2)
+            sliced_img = reshaped_img[np.newaxis,...,slice_idx] 
+            pred = (torch.sigmoid(net(support_im, support_ma, sliced_img).detach())>0.5)+0 #1,1,H,W
+        else:
+            sliced_img = img[:,slice_idx:slice_idx+1,...] 
+            pred = (torch.sigmoid(net(sliced_img).detach())>0.5)+0 #1,1,H,W
+        seg_slices.append(pred)
+    pred = torch.cat(seg_slices, dim=1)
+    return pred
 
 
-def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, multi_dim_dice=False):
+def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, get_3D_vols=False, show_examples=False):
     dset.num_iterations = num_samples
     loader = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
 
@@ -148,15 +138,40 @@ def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, mu
                 query_image = query_set['images'].to(device=device, dtype=torch.float32)
                 query_mask = query_set['labels'].to(device=device, dtype=torch.float32)
 
-                if args.model_type == "UNet" and not multi_dim_dice:
+                if args.model_type == "UNet" and not get_3D_vols:
                     pred = net(query_image.squeeze(1))
                     dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), binary=True)
-                elif args.model_type == "UNet" and multi_dim_dice:
-                    pred = predict_3D(net,query_image.squeeze(1))
+                elif args.model_type == "UNet" and get_3D_vols:
+                    pred = predict_3D(net, query_image.squeeze(1), pred_shape=query_mask.shape)
+                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), logits=False, binary=False, do3D=True)
+                elif get_3D_vols:
+                    pred = predict_3D(net, query_image, pred_shape=query_mask.shape, support_im=support_images, support_ma=support_masks)
                     dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), logits=False, binary=False, do3D=True)
                 else:
                     pred = net(support_images, support_masks, query_image)
                     dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), binary=True)
+
+                if show_examples:
+                    if get_3D_vols:
+                        label_amounts = torch.count_nonzero(query_mask.squeeze(), dim=(1,2))
+                        label_prob = label_amounts/torch.sum(label_amounts)
+                        chosen_slice = np.random.choice(np.arange(len(label_amounts)), p=label_prob.cpu())
+
+                        chosen_image = query_image[:, :, chosen_slice, ...]
+                        chosen_mask = query_mask[:, :, chosen_slice, ...]
+                        chosen_pred = pred[:, chosen_slice:chosen_slice+1, ...]
+                    else:
+                        chosen_image = query_image[:,:,args.pad_slices,...]
+                        chosen_mask = query_mask.squeeze(1)
+                        chosen_pred = pred
+
+                    if args.model_type == "UNet":
+                        middle_support_set = None
+                    else:
+                        cat_support_set = torch.cat([support_images, support_masks])
+                        middle_support_set = cat_support_set[:,:,args.pad_slices,...]
+                    #Accepts logits for pred
+                    clm.utils.training.display_forward_pass(dice.item(), chosen_image, chosen_pred, chosen_mask, middle_support_set)
 
                 epoch_val_dices.append(dice)
 

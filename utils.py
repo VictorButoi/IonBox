@@ -4,11 +4,14 @@ import torch
 import math
 import numpy as np
 
-def display_array(arr, num_rows=-1, num_cols=-1, titles=None, do_colorbars=False, set_zero_black=True, cmap=None):
+def display_array(arr, num_rows=-1, num_cols=-1, titles=None, do_colorbars=False, set_zero_black=False, cmap=None):
     arr = arr.squeeze()
     if len(arr.shape) == 4:
         arr = arr[0,...] #Account for batchsize possibility
-    assert len(arr.shape) == 3, "Proper shape for display must be [B, H, W]"
+
+    assert len(arr.shape) > 1 and len(arr.shape) <= 3, "Proper shape for display must be [B, H, W]"
+    if len(arr.shape)==2:
+        arr = arr[np.newaxis,...]
     
     if torch.is_tensor(arr): 
         if arr.requires_grad:
