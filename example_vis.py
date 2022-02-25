@@ -140,26 +140,28 @@ def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, ge
 
                 if args.model_type == "UNet" and not get_3D_vols:
                     pred = net(query_image.squeeze(1))
-                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), binary=True)
+                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, binary=True)
                 elif args.model_type == "UNet" and get_3D_vols:
                     pred = predict_3D(net, query_image.squeeze(1), pred_shape=query_mask.shape)
-                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), logits=False, binary=False, do3D=True)
+                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, logits=False, binary=False, do3D=True)
                 elif get_3D_vols:
                     pred = predict_3D(net, query_image, pred_shape=query_mask.shape, support_im=support_images, support_ma=support_masks)
-                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), logits=False, binary=False, do3D=True)
+                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, logits=False, binary=False, do3D=True)
                 else:
                     pred = net(support_images, support_masks, query_image)
-                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), binary=True)
+                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, binary=True)
 
                 if show_examples:
                     if get_3D_vols:
-                        label_amounts = torch.count_nonzero(query_mask.squeeze(), dim=(1,2))
-                        label_prob = label_amounts/torch.sum(label_amounts)
-                        chosen_slice = np.random.choice(np.arange(len(label_amounts)), p=label_prob.cpu())
+                        label_amounts = np.count_nonzero(query_mask.squeeze().cpu(), axis=(1,2))
+                        label_prob = label_amounts/np.sum(label_amounts) + 0.001
+                        label_prob = label_prob/np.sum(label_prob)
+                        chosen_slice = np.random.choice(np.arange(len(label_amounts)), p=label_prob)
 
                         chosen_image = query_image[:, :, chosen_slice, ...]
                         chosen_mask = query_mask[:, :, chosen_slice, ...]
                         chosen_pred = pred[:, chosen_slice:chosen_slice+1, ...]
+                        slice_dice = clm.losses.soft_dice(chosen_pred, chosen_mask, eps=args.eps, logits=False, binary=False, do3D=False)
                     else:
                         chosen_image = query_image[:,:,args.pad_slices,...]
                         chosen_mask = query_mask.squeeze(1)
@@ -171,7 +173,7 @@ def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, ge
                         cat_support_set = torch.cat([support_images, support_masks])
                         middle_support_set = cat_support_set[:,:,args.pad_slices,...]
                     #Accepts logits for pred
-                    clm.utils.training.display_forward_pass(dice.item(), chosen_image, chosen_pred, chosen_mask, middle_support_set)
+                    clm.utils.training.display_forward_pass(slice_dice.item(), chosen_image.cpu(), chosen_pred.cpu(), chosen_mask.cpu(), middle_support_set.cpu())
 
                 epoch_val_dices.append(dice)
 
