@@ -135,13 +135,30 @@ def predict_3D(net, img, pred_shape, support_im=None, support_ma=None):
     return pred
 
 
-def get_val_perf(args, net, dset, device, num_samples=0, axis=0, use_all_subjs=False, show_output=False, get_3D_vols=False, show_examples=False):
+def get_multi_axis_perf(args, net, dset, device, num_samples=0, labels=None, axes=[0,1,2], use_all_subjs=False, show_output=False, get_3D_vols=False, show_examples=False):
+    losses = []
+    for axis in axes:
+        val_dices = get_val_perf(args, net, dset, device, num_samples=num_samples, labels=labels, axis=0, use_all_subjs=use_all_subjs, show_output=False, get_3D_vols=get_3D_vols, show_examples=show_examples)
+        losses.append(val_dices)
+    losses = np.concatenate(np.array(losses))
+    val_dice_loss = np.mean(losses)
+    val_dice_std = np.std(losses)
+    print(f"Avg Val Hard Dice:", np.round(val_dice_loss,3))
+    print(f"Stdv of Hard Dice:", np.round(val_dice_std,3))
+    return val_dice_loss, val_dice_std
+
+def get_val_perf(args, net, dset, device, num_samples=0, labels=None, axis=0, use_all_subjs=False, show_output=False, get_3D_vols=False, show_examples=False):
     assert not(num_samples > 0 and use_all_subjs), "Can either do samples or go through subjects, not both."
     if use_all_subjs:
         dset.go_through_all_idxs = True
         dset.fixed_axis = axis
     else:
         dset.num_iterations = num_samples
+    
+    if labels:
+        dset.labels = labels
+        dset.limited_datasets = dset.datasets
+    dset.return_names = True
 
     loader = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
 
@@ -151,7 +168,7 @@ def get_val_perf(args, net, dset, device, num_samples=0, axis=0, use_all_subjs=F
     iteration = 0
     with tqdm(total=len(loader), desc=f'Validation Loop', unit='batch') as pbar:
         with torch.no_grad():
-            for (support_set, query_set) in loader:
+            for (support_set, query_set, query_example_name) in loader:
                 support_images = support_set['images'].to(device=device, dtype=torch.float32)
                 support_masks = support_set['labels'].to(device=device, dtype=torch.float32)
                 query_image = query_set['images'].to(device=device, dtype=torch.float32)
@@ -196,7 +213,7 @@ def get_val_perf(args, net, dset, device, num_samples=0, axis=0, use_all_subjs=F
                         cat_support_set = torch.cat([support_images, support_masks]).cpu()
                         middle_support_set = cat_support_set[:,:,args.pad_slices,...]
                     #Accepts logits for pred
-                    clm.utils.training.display_forward_pass(slice_dice.item(), chosen_image.cpu(), chosen_pred.cpu(), chosen_mask.cpu(), middle_support_set)
+                    clm.utils.training.display_forward_pass(slice_dice.item(), chosen_image.cpu(), chosen_pred.cpu(), chosen_mask.cpu(), middle_support_set, sub_name=query_example_name)
 
                 epoch_val_dices.append(dice)
 
@@ -206,13 +223,14 @@ def get_val_perf(args, net, dset, device, num_samples=0, axis=0, use_all_subjs=F
             epoch_val_dices = torch.tensor(epoch_val_dices)
             pbar.set_postfix(**{'avg val dice': torch.mean(epoch_val_dices)})
     pbar.close()
-    val_dice_loss = torch.mean(epoch_val_dices).numpy().item()
-    val_dice_std = torch.std(epoch_val_dices).numpy().item()
 
     if show_output:
-        print(f"Avg Val Hard Dice for {num_samples} iterations:", np.round(val_dice_loss,3))
-        print(f"Stdv of Hard Dice for {num_samples} iterations:", np.round(val_dice_std,3))
-        
-    return val_dice_loss, val_dice_std
+        val_dice_loss = torch.mean(epoch_val_dices).numpy().item()
+        val_dice_std = torch.std(epoch_val_dices).numpy().item()
+        print(f"Avg Val Hard Dice for {len(loader)} examples:", np.round(val_dice_loss,3))
+        print(f"Stdv of Hard Dice for {len(loader)} examples:", np.round(val_dice_std,3))
+        return val_dice_loss, val_dice_std
+    else:
+        return epoch_val_dices.numpy()
 
 
