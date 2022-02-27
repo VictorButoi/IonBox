@@ -44,14 +44,22 @@ def get_model_dset(split, date, model, datasets=None, root="/home/vib9/src/CLAIM
     try:
         _ = config.val_labels
     except:
-        config.val_labels = None      
+        config.val_labels = None
+
+    try:
+        _ = config.background_prob
+    except:
+        config.background_prob = 0.01
+
+    try:
+        _ = config.use_2D_setup
+    except:
+        config.use_2D_setup = True
 
     if datasets:
         config.train_dsets = datasets
         config.train_dsets_exclude = None
         config.val_dsets = datasets
-    
-    config.augmentations = None
 
     if split == "train":
         dset, _ = clm.datasets.generate_datasets(config, get_3D_vols=get_3D_vols)
@@ -69,6 +77,11 @@ def get_saved_model(date, model, epoch, root="/home/vib9/src/CLAIMS/results/mode
         config.no_querysupport_crossconv = True
         config.no_supportsupport_crossconv = True
         config.use_attention = False
+
+    try:
+        _ = config.eps
+    except:
+        config.eps = 1
 
     try:
         _ = config.pad_slices
@@ -122,15 +135,21 @@ def predict_3D(net, img, pred_shape, support_im=None, support_ma=None):
     return pred
 
 
-def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, get_3D_vols=False, show_examples=False):
-    dset.num_iterations = num_samples
+def get_val_perf(args, net, dset, device, num_samples=0, axis=0, use_all_subjs=False, show_output=False, get_3D_vols=False, show_examples=False):
+    assert not(num_samples > 0 and use_all_subjs), "Can either do samples or go through subjects, not both."
+    if use_all_subjs:
+        dset.go_through_all_idxs = True
+        dset.fixed_axis = axis
+    else:
+        dset.num_iterations = num_samples
+
     loader = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
 
     net.eval()
     epoch_val_dices = []
 
     iteration = 0
-    with tqdm(total=num_samples, desc=f'Validation Loop', unit='batch') as pbar:
+    with tqdm(total=len(loader), desc=f'Validation Loop', unit='batch') as pbar:
         with torch.no_grad():
             for (support_set, query_set) in loader:
                 support_images = support_set['images'].to(device=device, dtype=torch.float32)
@@ -153,10 +172,13 @@ def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, ge
 
                 if show_examples:
                     if get_3D_vols:
-                        label_amounts = np.count_nonzero(query_mask.squeeze().cpu(), axis=(1,2))
-                        label_prob = label_amounts/np.sum(label_amounts) + 0.001
-                        label_prob = label_prob/np.sum(label_prob)
-                        chosen_slice = np.random.choice(np.arange(len(label_amounts)), p=label_prob)
+                        if args.use_2D_setup:
+                            chosen_slice = int(query_image.shape[2]/2)
+                        else:
+                            label_amounts = np.count_nonzero(query_mask.squeeze().cpu(), axis=(1,2))
+                            label_prob = label_amounts/np.sum(label_amounts) + 0.001
+                            label_prob = label_prob/np.sum(label_prob)
+                            chosen_slice = np.random.choice(np.arange(len(label_amounts)), p=label_prob)
 
                         chosen_image = query_image[:, :, chosen_slice, ...]
                         chosen_mask = query_mask[:, :, chosen_slice, ...]
@@ -166,14 +188,15 @@ def get_val_perf(args, net, dset, device, num_samples=100, show_output=False, ge
                         chosen_image = query_image[:,:,args.pad_slices,...]
                         chosen_mask = query_mask.squeeze(1)
                         chosen_pred = pred
+                        slice_dice = dice
 
                     if args.model_type == "UNet":
                         middle_support_set = None
                     else:
-                        cat_support_set = torch.cat([support_images, support_masks])
+                        cat_support_set = torch.cat([support_images, support_masks]).cpu()
                         middle_support_set = cat_support_set[:,:,args.pad_slices,...]
                     #Accepts logits for pred
-                    clm.utils.training.display_forward_pass(slice_dice.item(), chosen_image.cpu(), chosen_pred.cpu(), chosen_mask.cpu(), middle_support_set.cpu())
+                    clm.utils.training.display_forward_pass(slice_dice.item(), chosen_image.cpu(), chosen_pred.cpu(), chosen_mask.cpu(), middle_support_set)
 
                 epoch_val_dices.append(dice)
 
