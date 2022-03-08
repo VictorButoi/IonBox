@@ -26,11 +26,16 @@ def get_models(date, root="/home/vib9/src/CLAIMS/results/models"):
         print(model)
 
 def get_model_info(date, model, root="/home/vib9/src/CLAIMS/results/models"):
-    print(list(map(lambda epoch: epoch.replace("epoch:",""), os.listdir(os.path.join(root, date, model)))))
+    epochs = list(map(lambda epoch: epoch.replace("epoch:",""), os.listdir(os.path.join(root, date, model))))
+    return epochs
 
-def get_model_dset(split, date, model, datasets=None, root="/home/vib9/src/CLAIMS/results/models", get_3D_vols=False):
+def get_model_dset(split, date, model, use_fullsize=False, percent_target=0, datasets=None, root="/home/vib9/src/CLAIMS/results/models", get_3D_vols=False):
     config = load_obj(os.path.join(root, date, model, "config"))
-    
+    config.percent_target = percent_target
+
+    if use_fullsize:
+        config.use_halfsize = False
+
     try:
         _ = config.pad_slices
     except:
@@ -47,9 +52,15 @@ def get_model_dset(split, date, model, datasets=None, root="/home/vib9/src/CLAIM
         config.val_labels = None
 
     try:
+        _ = config.fix_axis
+    except:
+        config.fix_axis = -1
+
+    try:
         _ = config.background_prob
     except:
         config.background_prob = 0.01
+    
 
     try:
         _ = config.use_2D_setup
@@ -119,6 +130,45 @@ def gen_example(args, net, dset, device):
     clm.utils.training.display_forward_pass(dice.item(), middle_query_image, pred, query_mask, middle_support_set)
 
 
+def get_multi_context_set_pred(args, axis, labels, sizes, net, dset, device, num_subjects=1, display_chart=False, show_examples=False):
+    dset.fixed_axis = axis
+    dset.labels = labels
+    dset.limited_datasets = dset.datasets
+
+    dice_per_context_size = np.zeros(len(sizes))
+
+    for s in range(num_subjects):
+        _, query_set = dset.__getitem__(0)
+
+        context_size_dice = np.zeros(len(sizes))
+        query_image = query_set['images'].to(device=device, dtype=torch.float32)[np.newaxis,...]
+        query_mask = query_set['labels'].to(device=device, dtype=torch.float32)
+        for s_idx, size in enumerate(sizes):
+            dset.max_support_set = size
+            support_set, _ = dset.__getitem__(0)
+            support_images = support_set['images'].to(device=device, dtype=torch.float32)[np.newaxis,...]
+            support_masks = support_set['labels'].to(device=device, dtype=torch.float32)[np.newaxis,...]
+            pred = net(support_images, support_masks, query_image)
+
+            dice = clm.losses.soft_dice(pred, query_mask, logits=True, binary=True)
+            context_size_dice[s_idx] = -1 * dice
+
+            middle_query_image = query_image[:,:,args.pad_slices,...]
+            cat_support_set = torch.cat([support_images, support_masks])
+            middle_support_set = cat_support_set[:,:,args.pad_slices,...]
+            #Accepts logits for pred
+            if show_examples:
+                clm.utils.training.display_forward_pass(dice.item(), middle_query_image, pred, query_mask, middle_support_set)
+    
+        dice_per_context_size = dice_per_context_size + context_size_dice
+
+    dice_per_context_size /= num_subjects
+
+    if display_chart:
+        plt.plot(sizes, dice_per_context_size)
+    plt.show()
+
+
 def predict_3D(net, img, pred_shape, support_im=None, support_ma=None):
     # preallocate our desired memory
     seg_slices = []
@@ -147,11 +197,13 @@ def get_multi_axis_perf(args, net, dset, device, num_samples=0, labels=None, axe
     print(f"Stdv of Hard Dice:", np.round(val_dice_std,3))
     return val_dice_loss, val_dice_std
 
-def get_val_perf(args, net, dset, device, num_samples=0, labels=None, axis=0, use_all_subjs=False, show_output=False, get_3D_vols=False, show_examples=False):
+
+def get_val_perf(args, nets, model_types, dset, device, num_samples=0, labels=None, axis=-1, use_all_subjs=False, show_output=False, get_3D_vols=False, show_examples=False):
     assert not(num_samples > 0 and use_all_subjs), "Can either do samples or go through subjects, not both."
+    dset.fix_axis = axis
+
     if use_all_subjs:
         dset.go_through_all_idxs = True
-        dset.fixed_axis = axis
     else:
         dset.num_iterations = num_samples
     
@@ -161,9 +213,7 @@ def get_val_perf(args, net, dset, device, num_samples=0, labels=None, axis=0, us
     dset.return_names = True
 
     loader = torch.utils.data.DataLoader(dset, batch_size=1, shuffle=True, num_workers=1, drop_last=True, pin_memory=True)
-
-    net.eval()
-    epoch_val_dices = []
+    epoch_val_dice_list = []
 
     iteration = 0
     with tqdm(total=len(loader), desc=f'Validation Loop', unit='batch') as pbar:
@@ -174,63 +224,68 @@ def get_val_perf(args, net, dset, device, num_samples=0, labels=None, axis=0, us
                 query_image = query_set['images'].to(device=device, dtype=torch.float32)
                 query_mask = query_set['labels'].to(device=device, dtype=torch.float32)
 
-                if args.model_type == "UNet" and not get_3D_vols:
-                    pred = net(query_image.squeeze(1))
-                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, binary=True)
-                elif args.model_type == "UNet" and get_3D_vols:
-                    pred = predict_3D(net, query_image.squeeze(1), pred_shape=query_mask.shape)
-                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, logits=False, binary=False, do3D=True)
-                elif get_3D_vols:
-                    pred = predict_3D(net, query_image, pred_shape=query_mask.shape, support_im=support_images, support_ma=support_masks)
-                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, logits=False, binary=False, do3D=True)
-                else:
-                    pred = net(support_images, support_masks, query_image)
-                    dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, binary=True)
+                pred_list = []
+                dice_list = []
+                for mod_idx, mod_type in enumerate(model_types):
+                    if mod_type == "UNet" and not get_3D_vols:
+                        pred = nets[mod_idx](query_image.squeeze(1))
+                        dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, binary=True)
+                    elif mod_type == "UNet" and get_3D_vols:
+                        pred = predict_3D(nets[mod_idx], query_image.squeeze(1), pred_shape=query_mask.shape)
+                        dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, logits=False, binary=False, do3D=True)
+                    elif get_3D_vols:
+                        pred = predict_3D(nets[mod_idx], query_image, pred_shape=query_mask.shape, support_im=support_images, support_ma=support_masks)
+                        dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, logits=False, binary=False, do3D=True)
+                    else:
+                        pred = nets[mod_idx](support_images, support_masks, query_image)
+                        dice = clm.losses.soft_dice(pred, query_mask.squeeze(1), eps=args.eps, binary=True)
+                    pred_list.append(pred)
+                    dice_list.append(dice)
 
                 if show_examples:
-                    if get_3D_vols:
-                        if args.use_2D_setup:
-                            chosen_slice = int(query_image.shape[2]/2)
+                    for pred_idx, pred in enumerate(pred_list):
+                        if get_3D_vols:
+                            if args.use_2D_setup:
+                                chosen_slice = int(query_image.shape[2]/2)
+                            else:
+                                label_amounts = np.count_nonzero(query_mask.squeeze().cpu(), axis=(1,2))
+                                label_prob = label_amounts/np.sum(label_amounts) + 0.001
+                                label_prob = label_prob/np.sum(label_prob)
+                                chosen_slice = np.random.choice(np.arange(len(label_amounts)), p=label_prob)
+
+                            chosen_image = query_image[:, :, chosen_slice, ...]
+                            chosen_mask = query_mask[:, :, chosen_slice, ...]
+                            chosen_pred = pred[:, chosen_slice:chosen_slice+1, ...]
+                            slice_dice = clm.losses.soft_dice(chosen_pred, chosen_mask, eps=args.eps, logits=False, binary=False, do3D=False)
                         else:
-                            label_amounts = np.count_nonzero(query_mask.squeeze().cpu(), axis=(1,2))
-                            label_prob = label_amounts/np.sum(label_amounts) + 0.001
-                            label_prob = label_prob/np.sum(label_prob)
-                            chosen_slice = np.random.choice(np.arange(len(label_amounts)), p=label_prob)
+                            chosen_image = query_image[:,:,args.pad_slices,...]
+                            chosen_mask = query_mask.squeeze(1)
+                            chosen_pred = pred
+                            slice_dice = dice_list[pred_idx]
 
-                        chosen_image = query_image[:, :, chosen_slice, ...]
-                        chosen_mask = query_mask[:, :, chosen_slice, ...]
-                        chosen_pred = pred[:, chosen_slice:chosen_slice+1, ...]
-                        slice_dice = clm.losses.soft_dice(chosen_pred, chosen_mask, eps=args.eps, logits=False, binary=False, do3D=False)
-                    else:
-                        chosen_image = query_image[:,:,args.pad_slices,...]
-                        chosen_mask = query_mask.squeeze(1)
-                        chosen_pred = pred
-                        slice_dice = dice
+                        if model_types[pred_idx] == "UNet":
+                            middle_support_set = None
+                        else:
+                            cat_support_set = torch.cat([support_images, support_masks]).cpu()
+                            middle_support_set = cat_support_set[:,:,args.pad_slices,...]
+                        #Accepts logits for pred
+                        clm.utils.training.display_forward_pass(slice_dice.item(), chosen_image.cpu(), chosen_pred.cpu(), chosen_mask.cpu(), middle_support_set, sub_name=query_example_name)
 
-                    if args.model_type == "UNet":
-                        middle_support_set = None
-                    else:
-                        cat_support_set = torch.cat([support_images, support_masks]).cpu()
-                        middle_support_set = cat_support_set[:,:,args.pad_slices,...]
-                    #Accepts logits for pred
-                    clm.utils.training.display_forward_pass(slice_dice.item(), chosen_image.cpu(), chosen_pred.cpu(), chosen_mask.cpu(), middle_support_set, sub_name=query_example_name)
-
-                epoch_val_dices.append(dice)
-
-                pbar.set_postfix(**{'hard dice (batch)': dice})
+                epoch_val_dice_list.append(dice_list)
                 pbar.update(support_images.shape[0])
                 iteration += 1
-            epoch_val_dices = torch.tensor(epoch_val_dices)
-            pbar.set_postfix(**{'avg val dice': torch.mean(epoch_val_dices)})
+            epoch_val_dice_list = torch.tensor(epoch_val_dice_list)
     pbar.close()
+    print(epoch_val_dice_list.shape)
 
     if show_output:
-        val_dice_loss = torch.mean(epoch_val_dices).numpy().item()
-        val_dice_std = torch.std(epoch_val_dices).numpy().item()
-        print(f"Avg Val Hard Dice for {len(loader)} examples:", np.round(val_dice_loss,3))
-        print(f"Stdv of Hard Dice for {len(loader)} examples:", np.round(val_dice_std,3))
+        for idx in range(len(nets)):
+            val_dice_loss = torch.mean(epoch_val_dice_list[:,idx]).numpy().item()
+            val_dice_std = torch.std(epoch_val_dice_list[:,idx]).numpy().item()
+            print(f"Avg Val Hard Dice for {len(loader)} examples Net {idx}:", np.round(val_dice_loss,3))
+            print(f"Stdv of Hard Dice for {len(loader)} examples Net {idx}:", np.round(val_dice_std,3))
         return val_dice_loss, val_dice_std
     else:
-        return epoch_val_dices.numpy()
+        return epoch_val_dice_list.numpy()
 
 
